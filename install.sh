@@ -63,11 +63,30 @@ chmod +x "${INSTALL_DIR}/goat-saas-agent"
 echo "${LATEST_TAG}" > "${INSTALL_DIR}/.goat-saas-agent-version"
 
 # Ensure PATH includes install dir
+PATH_UPDATED=""
 if ! echo "${PATH}" | grep -q "${INSTALL_DIR}"; then
-  SHELL_RC="${HOME}/.bashrc"
-  [ -f "${HOME}/.zshrc" ] && SHELL_RC="${HOME}/.zshrc"
-  echo "export PATH=\"${INSTALL_DIR}:\${PATH}\"" >> "${SHELL_RC}"
-  echo "Added ${INSTALL_DIR} to PATH in ${SHELL_RC}"
+  # Detect the correct shell rc file
+  SHELL_RC=""
+  case "$(basename "${SHELL:-/bin/bash}")" in
+    zsh)  SHELL_RC="${HOME}/.zshrc" ;;
+    fish) SHELL_RC="${HOME}/.config/fish/config.fish" ;;
+    *)    SHELL_RC="${HOME}/.bashrc" ;;
+  esac
+  # Prefer .zshrc on macOS (default shell is zsh)
+  if [ "${PLATFORM}" = "darwin" ] && [ -f "${HOME}/.zshrc" ]; then
+    SHELL_RC="${HOME}/.zshrc"
+  fi
+
+  if [ -n "${SHELL_RC}" ]; then
+    if [ "$(basename "${SHELL_RC}")" = "config.fish" ]; then
+      mkdir -p "$(dirname "${SHELL_RC}")"
+      echo "set -gx PATH ${INSTALL_DIR} \$PATH" >> "${SHELL_RC}"
+    else
+      echo "export PATH=\"${INSTALL_DIR}:\${PATH}\"" >> "${SHELL_RC}"
+    fi
+    echo "Added ${INSTALL_DIR} to PATH in ${SHELL_RC}"
+    PATH_UPDATED="${SHELL_RC}"
+  fi
   export PATH="${INSTALL_DIR}:${PATH}"
 fi
 
@@ -88,4 +107,10 @@ command -v claude >/dev/null 2>&1 \
   || echo "  ✗ claude CLI (required — install with: npm install -g @anthropic-ai/claude-code)"
 
 echo ""
+if [ -n "${PATH_UPDATED}" ]; then
+  echo "  To use goat-saas-agent in this terminal, run:"
+  echo ""
+  echo "    source ${PATH_UPDATED}"
+  echo ""
+fi
 echo "Run 'goat-saas-agent setup' to activate with your API key."
