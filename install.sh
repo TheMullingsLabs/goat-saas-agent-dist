@@ -52,7 +52,13 @@ curl -fsSL -L \
   -o "/tmp/checksums.txt"
 
 echo "Verifying checksum..."
-(cd /tmp && sha256sum -c checksums.txt --ignore-missing)
+if command -v sha256sum >/dev/null 2>&1; then
+  (cd /tmp && sha256sum -c checksums.txt --ignore-missing)
+elif command -v shasum >/dev/null 2>&1; then
+  (cd /tmp && shasum -a 256 -c checksums.txt)
+else
+  echo "WARNING: No checksum tool found — skipping verification"
+fi
 
 # Install binary
 mkdir -p "${INSTALL_DIR}"
@@ -96,15 +102,27 @@ echo ""
 
 # Check runtime dependencies
 echo "Checking dependencies..."
-command -v git >/dev/null 2>&1 \
-  && echo "  ✓ git" \
-  || echo "  ✗ git (required — install with: sudo apt install git)"
-command -v node >/dev/null 2>&1 \
-  && echo "  ✓ node" \
-  || echo "  ✗ node (required — install with: curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install nodejs)"
-command -v claude >/dev/null 2>&1 \
-  && echo "  ✓ claude CLI" \
-  || echo "  ✗ claude CLI (required — install with: npm install -g @anthropic-ai/claude-code)"
+if command -v git >/dev/null 2>&1; then
+  echo "  ✓ git"
+elif [ "${PLATFORM}" = "darwin" ]; then
+  echo "  ✗ git (required — install with: xcode-select --install)"
+else
+  echo "  ✗ git (required — install with: sudo apt install git)"
+fi
+
+if command -v node >/dev/null 2>&1; then
+  echo "  ✓ node"
+elif [ "${PLATFORM}" = "darwin" ]; then
+  echo "  ✗ node (required — install with: brew install node@20)"
+else
+  echo "  ✗ node (required — install with: curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install nodejs)"
+fi
+
+if command -v claude >/dev/null 2>&1; then
+  echo "  ✓ claude CLI"
+else
+  echo "  ✗ claude CLI (required — install with: npm install -g @anthropic-ai/claude-code)"
+fi
 
 echo ""
 if [ -n "${PATH_UPDATED}" ]; then
