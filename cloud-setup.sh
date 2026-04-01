@@ -5,6 +5,9 @@
 
 set -euo pipefail
 
+# Prevent interactive prompts during package installation
+export DEBIAN_FRONTEND=noninteractive
+
 echo "============================================"
 echo "  goat-saas-agent Cloud Build Setup"
 echo "============================================"
@@ -13,7 +16,7 @@ echo ""
 # ── System updates ────────────────────────────────────────────────────────────
 
 echo "[1/7] Updating system packages..."
-apt-get update -qq && apt-get upgrade -y -qq
+apt-get update -qq && apt-get upgrade -y -qq -o Dpkg::Options::="--force-confold"
 
 # ── Node.js 20 LTS ───────────────────────────────────────────────────────────
 
