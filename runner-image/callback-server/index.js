@@ -1,0 +1,459 @@
+/**
+ * Runner VM callback server — receives gate responses and the initial
+ * provisioning payload (secrets + config) from the MCP server, then
+ * launches the goat-saas-agent pipeline locally.
+ *
+ * Runs on a random port and writes its port to /tmp/goat-runner-callback-port.
+ */
+
+import express from "express";
+import { spawn, execSync } from "child_process";
+import { promises as fs, writeFileSync } from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { homedir } from "os";
+
+const WORKDIR = "/opt/goat-runner/workspace";
+const CONFIG_DIR = path.join(WORKDIR, "config");
+
+// Module-level callback port. Set by the listen callback in script mode and
+// readable by provisionAndRun() when it spawns the agent.
+let LISTEN_PORT = 0;
+
+const app = express();
+app.use(express.json({ limit: "5mb" }));
+
+/**
+ * Each gate has TWO halves on the runner:
+ *   1. The agent pipeline POSTs /agent/wait-gate (long poll). The Express
+ *      response object is parked in `waiters` keyed by gateId.
+ *   2. The MCP server later POSTs /gate-response with the operator's answer.
+ *      That handler looks up the parked response and writes the answer back.
+ *
+ * If /gate-response arrives BEFORE /agent/wait-gate (race), the answer is
+ * stashed in `pendingResponses` and replayed when the agent finally polls.
+ */
+const waiters = new Map();          // gateId -> Express res object (parked)
+const pendingResponses = new Map(); // gateId -> { response, operatorAnswer }
+
+/**
+ * POST /agent/wait-gate — long-polled by the agent process when it hits a gate.
+ * Holds the HTTP response open until /gate-response arrives. No timeout —
+ * operators can take hours to respond.
+ */
+app.post("/agent/wait-gate", (req, res) => {
+  const { gateId } = req.body || {};
+  if (!gateId) {
+    res.status(400).json({ error: "gateId is required" });
+    return;
+  }
+
+  // Replay path: response already arrived
+  const stashed = pendingResponses.get(gateId);
+  if (stashed) {
+    pendingResponses.delete(gateId);
+    res.json(stashed);
+    return;
+  }
+
+  // Park the response object — will be released by /gate-response.
+  // Use res.on("close"), NOT req.on("close"): the request "close" event
+  // fires as soon as the body is fully received, which is immediately for a
+  // small JSON payload — that would tear down the parked entry before the
+  // operator could ever respond. The response "close" event fires when the
+  // long-poll connection actually closes (operator disconnects, callback
+  // server shutdown, etc.), which is what we actually want to clean up on.
+  waiters.set(gateId, res);
+  res.on("close", () => {
+    if (waiters.get(gateId) === res) waiters.delete(gateId);
+  });
+});
+
+/**
+ * POST /gate-response — receive gate response from MCP server.
+ * Releases any parked /agent/wait-gate response, or stashes the answer for
+ * replay if the agent hasn't polled yet.
+ */
+app.post("/gate-response", (req, res) => {
+  const { gateId, response, operatorAnswer } = req.body;
+
+  if (!gateId || !response) {
+    res.status(400).json({ error: "gateId and response are required" });
+    return;
+  }
+
+  const parked = waiters.get(gateId);
+  if (parked) {
+    waiters.delete(gateId);
+    parked.json({ response, operatorAnswer });
+  } else {
+    // Race: stash for the agent to pick up when it polls
+    pendingResponses.set(gateId, { response, operatorAnswer });
+  }
+  res.json({ success: true });
+});
+
+/**
+ * POST /provision-config — receive secrets + config and start the pipeline.
+ * Body shape (from MCP server's /runners/:id/register response):
+ *   { buildId, githubRepo, config: { app, agent, integrations },
+ *     secrets: { anthropicApiKey, githubPat, dbPassword, goatSaasApiKey },
+ *     pipelineArgs }
+ */
+app.post("/provision-config", async (req, res) => {
+  const { buildId, githubRepo, config, secrets, pipelineArgs } = req.body || {};
+  if (!buildId || !githubRepo || !config || !secrets) {
+    res.status(400).json({ error: "buildId, githubRepo, config, and secrets are required" });
+    return;
+  }
+
+  res.json({ success: true, status: "starting" });
+
+  // Run provisioning asynchronously so we don't block the HTTP response.
+  provisionAndRun({ buildId, githubRepo, config, secrets, pipelineArgs }).catch((err) => {
+    console.error("[provision] failed:", err);
+    reportStatus("destroyed").catch(() => {});
+  });
+});
+
+async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineArgs }) {
+  await reportStatus("cloning");
+
+  // 1. Clean workspace
+  await fs.rm(WORKDIR, { recursive: true, force: true });
+  await fs.mkdir(WORKDIR, { recursive: true });
+
+  // 2. Clone the repo using the github PAT
+  const cloneUrl = `https://x-access-token:${secrets.githubPat}@github.com/${githubRepo}.git`;
+  await runCommand("git", ["clone", "--depth", "1", cloneUrl, WORKDIR], {});
+
+  // 3. Write config files (frontmatter YAML — agent reads via gray-matter).
+  //    vercel-team-id arrives in config.integrations from the operator's
+  //    integrations.md (it's not a secret — it's a public Vercel project ID).
+  await fs.mkdir(CONFIG_DIR, { recursive: true });
+  await writeConfigFile(path.join(CONFIG_DIR, "app.md"), config.app || {});
+  await writeConfigFile(path.join(CONFIG_DIR, "agent.md"), config.agent || {});
+  await writeConfigFile(path.join(CONFIG_DIR, "integrations.md"), config.integrations || {});
+
+  // 4. Write secrets.md with 0o600 permissions.
+  const secretsFields = {
+    "anthropic-api-key": secrets.anthropicApiKey,
+    "github-pat": secrets.githubPat,
+    "db-password": secrets.dbPassword || "",
+    "vercel-token": secrets.vercelToken || "",
+  };
+  const secretsPath = path.join(CONFIG_DIR, "secrets.md");
+  await writeConfigFile(secretsPath, secretsFields);
+  await fs.chmod(secretsPath, 0o600);
+
+  // 4b/c. Configure git identity (so bootstrap doesn't prompt) and set up
+  //       gh as the credential helper so subsequent git push calls use
+  //       GH_TOKEN from env instead of persisting the PAT in .git/config.
+  //       See configureGitCredentials() for the full sequence.
+  await configureGitCredentials({
+    workdir: WORKDIR,
+    githubRepo,
+    githubPat: secrets.githubPat,
+  });
+
+  // 4d. Pre-write a placeholder .env.local so bootstrap does not prompt for DB
+  //     configuration. The runner uses the local PostgreSQL installed by
+  //     setup.sh; the agent will read from secrets.md for the password.
+  const envLocalPath = path.join(WORKDIR, ".env.local");
+  if (!(await fileExists(envLocalPath))) {
+    const dbName = (config.app && config.app["app-name"]) || "goat_saas_app";
+    await fs.writeFile(
+      envLocalPath,
+      [
+        `DATABASE_URL=postgresql://postgres:${secrets.dbPassword || "postgres"}@localhost:5432/${dbName}`,
+        `PGHOST=localhost`,
+        `PGPORT=5432`,
+        `PGDATABASE=${dbName}`,
+        `PGUSER=postgres`,
+        `PGPASSWORD=${secrets.dbPassword || "postgres"}`,
+      ].join("\n") + "\n",
+      "utf-8",
+    );
+    await fs.chmod(envLocalPath, 0o600);
+  }
+
+  // 5. Write ~/.goat-saas-agent/credentials.json so the agent can validate
+  //    its license and report build events to the MCP server. Also log into
+  //    Claude Code by setting ANTHROPIC_API_KEY in the spawn environment.
+  //    Both are best-effort — if either fails, the pipeline continues (the
+  //    build reporter is fire-and-forget and the license check may still pass
+  //    if credentials.json was baked into the snapshot image).
+  const mcpServerUrl = process.env.GOAT_MCP_SERVER_URL || "";
+  if (secrets.goatSaasApiKey && mcpServerUrl) {
+    await writeAgentCredentials(secrets.goatSaasApiKey, mcpServerUrl);
+  }
+
+  // 5. Run the pipeline. Args and env are built by pure helpers
+  //    (buildSpawnArgs / buildSpawnEnv) so they can be unit-tested without
+  //    actually spawning the agent.
+  await reportStatus("running");
+  const args = buildSpawnArgs(pipelineArgs);
+  const spawnEnv = buildSpawnEnv({
+    baseEnv: process.env,
+    callbackPort: LISTEN_PORT,
+    buildId,
+    githubPat: secrets.githubPat,
+    anthropicApiKey: secrets.anthropicApiKey,
+  });
+  const exit = await runCommand("goat-saas-agent", args, { cwd: WORKDIR, env: spawnEnv });
+
+  // Early-wipe secrets.md immediately on agent exit (before status report).
+  // Extracted to wipeSecretsAfterAgent() for testability.
+  await wipeSecretsAfterAgent(secretsPath);
+
+  await reportStatus(exit === 0 ? "idle" : "destroyed");
+}
+
+/**
+ * Build the CLI argument array for spawning `goat-saas-agent run` on a
+ * remote runner. Always includes --skip-codex --sync-state --no-update-check
+ * and the analysis model. Optional flags are controlled by pipelineArgs.
+ *
+ * --no-update-check is required on headless runners: the update check prompts
+ * interactively ("Update now? [y/N]") which would block indefinitely on a VM
+ * with no attached terminal.
+ *
+ * Pure function — no side effects — so tests can assert the exact arg list.
+ */
+export function buildSpawnArgs(pipelineArgs = {}) {
+  const args = ["run", "--skip-codex", "--sync-state", "--no-update-check", "--analysis-model", "claude-sonnet-4-6"];
+  if (pipelineArgs.autoApprove) args.push("--auto-approve");
+  if (pipelineArgs.parallelAnalysis) args.push("--parallel-analysis");
+  if (pipelineArgs.skipPrototype) args.push("--skip-prototype");
+  if (pipelineArgs.fromStep) args.push("--from-step", pipelineArgs.fromStep);
+  return args;
+}
+
+/**
+ * Build the env var object for spawning `goat-saas-agent run`. Copies the
+ * base process.env and overlays the runner-specific vars the agent needs:
+ *   - GOAT_REMOTE=1 enables runner-mode detection
+ *   - GOAT_CALLBACK_PORT tells the agent's RemoteGateHandler where to long-poll
+ *   - GOAT_SAAS_BUILD_ID is the MCP-side buildId (fixes the build ID schism)
+ *   - GH_TOKEN is the GitHub PAT for gh credential helper
+ *   - ANTHROPIC_API_KEY enables Claude Code to authenticate without interactive login
+ *
+ * Pure function — takes the base env + runner config, returns a new object.
+ */
+export function buildSpawnEnv({ baseEnv, callbackPort, buildId, githubPat, anthropicApiKey }) {
+  const env = {
+    ...baseEnv,
+    GOAT_REMOTE: "1",
+    GOAT_CALLBACK_PORT: String(callbackPort),
+    GOAT_SAAS_BUILD_ID: buildId,
+    GH_TOKEN: githubPat,
+  };
+  if (anthropicApiKey) {
+    env.ANTHROPIC_API_KEY = anthropicApiKey;
+  }
+  return env;
+}
+
+/**
+ * Write ~/.goat-saas-agent/credentials.json with the operator's API key and
+ * MCP server URL. This allows the agent on the runner VM to validate its
+ * license and report build events to the MCP server without requiring
+ * `goat-saas-agent setup` to have been run on the snapshot image.
+ *
+ * Best-effort — silently returns false on any error. The VM destroy is the
+ * ultimate safety net for any credential residue.
+ */
+export async function writeAgentCredentials(apiKey, serverUrl) {
+  try {
+    const dir = path.join(homedir(), ".goat-saas-agent");
+    await fs.mkdir(dir, { recursive: true });
+    const credPath = path.join(dir, "credentials.json");
+    await fs.writeFile(credPath, JSON.stringify({ apiKey, serverUrl }, null, 2), { mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Best-effort wipe of secrets.md immediately after the agent exits. Takes a
+ * path so tests can pass a tmp file and verify the delete without spawning
+ * a real agent. Silently swallows errors — the VM destroy is the ultimate
+ * safety net.
+ */
+export async function wipeSecretsAfterAgent(secretsPath) {
+  try {
+    await fs.rm(secretsPath, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Configure git credentials on a freshly-cloned runner workspace:
+ *   1. Set generic git identity so the agent's bootstrap doesn't prompt
+ *   2. Strip the PAT from the clone URL (set-url to the bare URL)
+ *   3. Set up `gh` as the credential helper via GH_TOKEN env
+ *
+ * Takes a commandRunner so tests can mock the spawn calls and assert
+ * the sequence of commands + env vars.
+ *
+ * After this runs, subsequent `git push` calls authenticate via GH_TOKEN
+ * from the agent's process env — the PAT is never persisted in .git/config.
+ */
+export async function configureGitCredentials({ workdir, githubRepo, githubPat, commandRunner = runCommand }) {
+  // Set generic git identity so the agent's bootstrap step doesn't prompt
+  await commandRunner("git", ["config", "user.name", "goat-saas-runner"], { cwd: workdir });
+  await commandRunner("git", ["config", "user.email", "runner@goat-saas.local"], { cwd: workdir });
+
+  // Replace the PAT-in-URL remote with a bare HTTPS URL
+  await commandRunner(
+    "git",
+    ["remote", "set-url", "origin", `https://github.com/${githubRepo}.git`],
+    { cwd: workdir },
+  );
+
+  // Install gh as the credential helper for github.com. gh reads GH_TOKEN
+  // from env on each push — PAT never touches disk.
+  await commandRunner("gh", ["auth", "setup-git"], {
+    cwd: workdir,
+    env: { ...process.env, GH_TOKEN: githubPat },
+  });
+}
+
+async function fileExists(p) {
+  try {
+    await fs.stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeConfigFile(filePath, fields) {
+  const lines = ["---"];
+  for (const [k, v] of Object.entries(fields)) {
+    if (v === undefined || v === null) continue;
+    if (typeof v === "string" && (v.includes(":") || v.includes("#"))) {
+      lines.push(`${k}: "${v.replace(/"/g, '\\"')}"`);
+    } else {
+      lines.push(`${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`);
+    }
+  }
+  lines.push("---", "");
+  return fs.writeFile(filePath, lines.join("\n"), "utf-8");
+}
+
+function runCommand(cmd, args, opts) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: "inherit", ...opts });
+    child.on("error", reject);
+    child.on("exit", (code) => resolve(code ?? 0));
+  });
+}
+
+async function reportStatus(status) {
+  const url = process.env.GOAT_MCP_SERVER_URL;
+  const id = process.env.GOAT_RUNNER_INSTANCE_ID;
+  const token = process.env.GOAT_RUNNER_TOKEN;
+  if (!url || !id) return;
+  try {
+    await fetch(`${url}/runners/${encodeURIComponent(id)}/status`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ status }),
+    });
+  } catch {
+    // Status reports are best-effort
+  }
+}
+
+/**
+ * GET /health — health check
+ */
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", waitingGates: waiters.size, pendingResponses: pendingResponses.size });
+});
+
+/**
+ * Verify ufw is active on the runner. Bind on 0.0.0.0 is required because
+ * the MCP server reaches us via the runner's public IP for /gate-response,
+ * but the host firewall (configured by setup.sh) is the actual perimeter —
+ * it must allow only the MCP server's IP on this dynamic port. /agent/wait-gate
+ * has no authentication and depends on the agent always using 127.0.0.1 to
+ * reach us; if the firewall is open, an attacker could spoof gate responses.
+ *
+ * Accepts an optional `{ exec, logger }` injection so tests can exercise all
+ * three branches (active / inactive / missing-ufw) without depending on the
+ * host environment. Returns a string describing the outcome for assertions.
+ *
+ * See goat-saas-skill-setup/runner-image/setup.sh for firewall configuration.
+ */
+export function checkFirewall({ exec = execSync, logger = console.error } = {}) {
+  try {
+    const out = exec("ufw status 2>/dev/null", { encoding: "utf-8" });
+    if (!/Status: active/i.test(out)) {
+      logger("[WARN] ufw is INACTIVE on this runner. The callback server's");
+      logger("       /gate-response endpoint is exposed to the public internet");
+      logger("       and an attacker who learns the runner IP + port can spoof");
+      logger("       gate responses. Run 'ufw enable' or rebuild the snapshot.");
+      return "inactive";
+    }
+    return "active";
+  } catch {
+    logger("[WARN] ufw is not installed on this runner. Host firewall checks");
+    logger("       skipped. The callback server is exposed to the public internet.");
+    return "missing";
+  }
+}
+
+// Export the Express app and helpers so tests can import them without
+// triggering app.listen(). The script-mode entry below only runs when this
+// file is invoked directly (e.g. by cloud-init's `node callback-server/index.js`).
+export { app, waiters, pendingResponses, writeConfigFile, fileExists };
+
+// Exposed for tests — verify that importing the module does NOT trigger
+// app.listen() (i.e. isMainModule is false under vitest).
+export function getIsMainModule() {
+  return isMainModule;
+}
+
+/**
+ * Is this module the main entry point (i.e. invoked via `node index.js`,
+ * not imported by a test)? Use fileURLToPath on both sides to handle both
+ * POSIX (`/opt/.../index.js`) and Windows (`C:\\...\\index.js`) consistently.
+ * The previous string-comparison approach worked on POSIX but always
+ * returned false on Windows because `file://C:\\path` is not a valid URL.
+ */
+const isMainModule = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    const thisFile = fileURLToPath(import.meta.url);
+    const entryFile = process.argv[1];
+    // Normalize both — on Windows, path resolution may differ in case/sep
+    return path.resolve(thisFile) === path.resolve(entryFile);
+  } catch {
+    return false;
+  }
+})();
+
+if (isMainModule) {
+  const PORT = process.env.CALLBACK_PORT || 0;
+  const server = app.listen(PORT, "0.0.0.0", () => {
+    const addr = server.address();
+    LISTEN_PORT = (typeof addr === "object" && addr ? addr.port : Number(PORT)) || 0;
+    console.log(`Runner callback server listening on port ${LISTEN_PORT}`);
+    checkFirewall();
+
+    // Write port to file for the cloud-init script to read
+    try {
+      writeFileSync("/tmp/goat-runner-callback-port", String(LISTEN_PORT));
+    } catch {
+      // Best-effort — non-Linux environments may not have /tmp
+    }
+  });
+}
