@@ -214,8 +214,17 @@ async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineA
     instanceId: process.env.GOAT_RUNNER_INSTANCE_ID,
     token: process.env.GOAT_RUNNER_TOKEN,
   });
+  // Cycle 21-1-1 — resolve the agent binary by absolute path. install.sh
+  // installs to /root/.local/bin/goat-saas-agent and appends ~/.local/bin
+  // to root's .bashrc PATH, but cloud-init's `nohup node ...` does NOT
+  // source .bashrc, so the spawned callback server's PATH doesn't include
+  // the install dir. Spawning by bare name returns ENOENT and the agent
+  // never executes (this is the bug that killed every remote build for the
+  // last 12+ hours). Resolving the absolute path here makes the spawn
+  // robust regardless of how cloud-init was invoked.
+  const agentBinary = resolveAgentBinary(spawnEnv);
   const exit = await runAgentWithLogSink(
-    "goat-saas-agent",
+    agentBinary,
     args,
     { cwd: WORKDIR, env: spawnEnv },
     logSink,
@@ -249,6 +258,42 @@ export function buildSpawnArgs(pipelineArgs = {}) {
 }
 
 /**
+ * Cycle 21-1-1 — Resolve the goat-saas-agent binary path. install.sh writes
+ * the binary to ${HOME}/.local/bin/goat-saas-agent and appends that dir to
+ * the user's shell rc file. cloud-init's `nohup node callback-server/...`
+ * does NOT source .bashrc, so the callback server's PATH does not include
+ * the install dir, and `spawn("goat-saas-agent", ...)` returns ENOENT.
+ *
+ * This helper checks the known install paths in priority order and returns
+ * the first one that exists. Falls back to the bare name if none of the
+ * candidate paths exist — that lets a future install location still work
+ * via PATH lookup.
+ *
+ * Pure function — takes an env object so tests can inject a fake HOME.
+ * Exported for testability.
+ */
+import { existsSync as fsExistsSync } from "fs";
+
+export function resolveAgentBinary(env = process.env, exists = fsExistsSync) {
+  const home = env.HOME || "/root";
+  const candidates = [
+    path.posix.join(home, ".local", "bin", "goat-saas-agent"),
+    "/root/.local/bin/goat-saas-agent",
+    "/usr/local/bin/goat-saas-agent",
+    "/usr/bin/goat-saas-agent",
+  ];
+  for (const c of candidates) {
+    if (exists(c)) return c;
+  }
+  // Last resort — bare name. Lets the callback server still work if some
+  // future runner image installs the binary somewhere we don't know about
+  // AND has it on PATH. If it ENOENTs, the runAgentWithLogSink error
+  // handler captures the spawn error in the log channel — making the
+  // failure visible (cycle 21-1).
+  return "goat-saas-agent";
+}
+
+/**
  * Build the env var object for spawning `goat-saas-agent run`. Copies the
  * base process.env and overlays the runner-specific vars the agent needs:
  *   - GOAT_REMOTE=1 enables runner-mode detection
@@ -260,8 +305,21 @@ export function buildSpawnArgs(pipelineArgs = {}) {
  * Pure function — takes the base env + runner config, returns a new object.
  */
 export function buildSpawnEnv({ baseEnv, callbackPort, buildId, githubPat, anthropicApiKey }) {
+  // Cycle 21-1-1 — also prepend ~/.local/bin to PATH so subprocesses
+  // spawned BY the agent (e.g. claude CLI, gh) can also find binaries
+  // installed there. The primary fix for the agent itself is
+  // resolveAgentBinary which uses an absolute path; this is defense-in-
+  // depth for everything the agent transitively spawns.
+  // Use path.posix.join because the runner is always Linux even if the
+  // tests run on Windows.
+  const home = baseEnv.HOME || "/root";
+  const localBin = path.posix.join(home, ".local", "bin");
+  const existingPath = baseEnv.PATH || "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+  const augmentedPath = existingPath.includes(localBin) ? existingPath : `${localBin}:${existingPath}`;
+
   const env = {
     ...baseEnv,
+    PATH: augmentedPath,
     GOAT_REMOTE: "1",
     GOAT_CALLBACK_PORT: String(callbackPort),
     GOAT_SAAS_BUILD_ID: buildId,
@@ -567,8 +625,8 @@ export function checkFirewall({ exec = execSync, logger = console.error } = {}) 
 // Export the Express app and helpers so tests can import them without
 // triggering app.listen(). The script-mode entry below only runs when this
 // file is invoked directly (e.g. by cloud-init's `node callback-server/index.js`).
-// runAgentWithLogSink and buildLogSink are already exported via their `export`
-// declarations above (cycle 21-1).
+// runAgentWithLogSink, buildLogSink, and resolveAgentBinary are exported via
+// their `export` declarations above (cycle 21-1 / 21-1-1).
 export { app, waiters, pendingResponses, writeConfigFile, fileExists, reportStatus };
 
 // Exposed for tests — verify that importing the module does NOT trigger
