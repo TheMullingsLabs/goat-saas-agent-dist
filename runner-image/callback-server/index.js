@@ -324,6 +324,12 @@ export function buildSpawnEnv({ baseEnv, callbackPort, buildId, githubPat, anthr
     GOAT_CALLBACK_PORT: String(callbackPort),
     GOAT_SAAS_BUILD_ID: buildId,
     GH_TOKEN: githubPat,
+    // Cycle 21-1-4 — never let git try to prompt interactively. Without this,
+    // a credential-helper failure makes git hang trying to read username from
+    // /dev/tty (which doesn't exist on the runner), producing the misleading
+    // "could not read Username" stderr. With this set, the failure is fast
+    // and unambiguous.
+    GIT_TERMINAL_PROMPT: "0",
   };
   if (anthropicApiKey) {
     env.ANTHROPIC_API_KEY = anthropicApiKey;
@@ -391,12 +397,42 @@ export async function configureGitCredentials({ workdir, githubRepo, githubPat, 
     { cwd: workdir },
   );
 
-  // Install gh as the credential helper for github.com. gh reads GH_TOKEN
-  // from env on each push — PAT never touches disk.
-  await commandRunner("gh", ["auth", "setup-git"], {
-    cwd: workdir,
-    env: { ...process.env, GH_TOKEN: githubPat },
-  });
+  // Cycle 21-1-4 — Inline credential helper that reads GH_TOKEN from env at
+  // lookup time. Replaces `gh auth setup-git` which we previously hoped would
+  // wire gh as the credential helper but observably failed: every git push
+  // from the runner was returning `fatal: could not read Username for
+  // 'https://github.com'`. The reason `gh auth setup-git` doesn't work in this
+  // environment isn't worth chasing — the inline helper sidesteps the entire
+  // class of failures because it has no external binary dependency.
+  //
+  // The helper is a bash function that responds to the `get` operation by
+  // echoing username + password from env. Git calls credential helpers with
+  // the operation as $1 (`get`, `store`, or `erase`); we only handle `get`
+  // (the only one that matters for fetch/push) and silently ignore the rest.
+  // The helper is written to global git config (~/.gitconfig) so EVERY git
+  // invocation in any cwd uses it, not just one repo.
+  //
+  // GH_TOKEN reaches the helper via the spawn env: buildSpawnEnv sets it on
+  // every agent spawn, the agent inherits it on every subprocess, git's
+  // credential-helper child inherits it from git. The PAT is never persisted
+  // to disk in any form.
+  //
+  // GIT_TERMINAL_PROMPT=0 (set in buildSpawnEnv) ensures git fails fast with
+  // a clear error if the helper somehow returns nothing, instead of silently
+  // hanging on an interactive prompt that has no TTY to answer.
+  const helperScript = `!f() { test "$1" = get && echo username=x-access-token && echo password=$GH_TOKEN; }; f`;
+  await commandRunner(
+    "git",
+    ["config", "--global", "credential.https://github.com.helper", helperScript],
+    { cwd: workdir },
+  );
+  // Also set the same helper at the unscoped credential.helper key as a
+  // fallback for any git internal that doesn't pick up the host-scoped one.
+  await commandRunner(
+    "git",
+    ["config", "--global", "credential.helper", helperScript],
+    { cwd: workdir },
+  );
 }
 
 async function fileExists(p) {
