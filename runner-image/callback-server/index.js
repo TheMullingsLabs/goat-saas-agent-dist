@@ -191,6 +191,15 @@ async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineA
   // 5. Run the pipeline. Args and env are built by pure helpers
   //    (buildSpawnArgs / buildSpawnEnv) so they can be unit-tested without
   //    actually spawning the agent.
+  //
+  // Cycle 21-1 — agent stdout+stderr is piped through a line-buffered sink
+  // that POSTs chunks to MCP's /runners/:id/log endpoint. The operator can
+  // then fetch the log remotely with `goat-saas-agent runner-log <id>`,
+  // which is the only practical way to debug a failed runner — ufw blocks
+  // SSH from arbitrary IPs and the DO web console requires a password
+  // reset that's cumbersome mid-debug. Lines are also tee'd to
+  // /var/log/goat-callback.log via console.log so SSH-based debugging
+  // remains a fallback when it works.
   await reportStatus("running");
   const args = buildSpawnArgs(pipelineArgs);
   const spawnEnv = buildSpawnEnv({
@@ -200,7 +209,17 @@ async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineA
     githubPat: secrets.githubPat,
     anthropicApiKey: secrets.anthropicApiKey,
   });
-  const exit = await runCommand("goat-saas-agent", args, { cwd: WORKDIR, env: spawnEnv });
+  const logSink = buildLogSink({
+    url: process.env.GOAT_MCP_SERVER_URL,
+    instanceId: process.env.GOAT_RUNNER_INSTANCE_ID,
+    token: process.env.GOAT_RUNNER_TOKEN,
+  });
+  const exit = await runAgentWithLogSink(
+    "goat-saas-agent",
+    args,
+    { cwd: WORKDIR, env: spawnEnv },
+    logSink,
+  );
 
   // Early-wipe secrets.md immediately on agent exit (before status report).
   // Extracted to wipeSecretsAfterAgent() for testability.
@@ -353,6 +372,140 @@ function runCommand(cmd, args, opts) {
   });
 }
 
+/**
+ * Cycle 21-1 — Run the agent with stdout+stderr piped through a line-buffered
+ * flusher that pushes chunks to MCP via POST /runners/:id/log. This lets the
+ * operator read the agent's actual output remotely (via `goat-saas-agent
+ * runner-log <id>`) without SSHing into the runner droplet — ufw blocks
+ * external SSH and the DO web console requires a password reset that's
+ * cumbersome to use mid-debug.
+ *
+ * Behavior:
+ *   - Buffers up to FLUSH_LINE_THRESHOLD lines OR FLUSH_INTERVAL_MS milliseconds
+ *   - Each line is also tee'd to /var/log/goat-callback.log via console.log so
+ *     SSH-based debugging still works as a fallback
+ *   - Final flush on exit, BEFORE the status report fires
+ *   - All log push failures are silently dropped — the agent's exit code is
+ *     authoritative, the log buffer is best-effort telemetry
+ *
+ * Exported as a separate function (not part of runCommand) so the existing
+ * test suite for runCommand stays untouched and the new pipe behavior gets
+ * its own focused tests.
+ */
+const FLUSH_LINE_THRESHOLD = 50;
+const FLUSH_INTERVAL_MS = 3000;
+const MAX_LINE_LENGTH = 4000; // truncate pathological lines (binary blobs, etc.)
+
+export function runAgentWithLogSink(cmd, args, opts, logSink) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], ...opts });
+
+    let buffer = [];
+    let flushTimer = null;
+    let stdoutCarry = "";
+    let stderrCarry = "";
+    let flushing = false;
+
+    const scheduleFlush = () => {
+      if (flushTimer) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        flushBuffer().catch(() => {});
+      }, FLUSH_INTERVAL_MS);
+    };
+
+    const flushBuffer = async () => {
+      if (flushing) return;
+      if (!buffer.length) return;
+      flushing = true;
+      const lines = buffer;
+      buffer = [];
+      try {
+        await logSink(lines);
+      } catch {
+        // Best-effort — drop the chunk
+      } finally {
+        flushing = false;
+      }
+    };
+
+    const enqueue = (line) => {
+      if (!line.length) return;
+      const truncated = line.length > MAX_LINE_LENGTH ? line.slice(0, MAX_LINE_LENGTH) + "…[truncated]" : line;
+      buffer.push(truncated);
+      // Tee to local log for SSH-based debugging fallback
+      console.log(truncated);
+      if (buffer.length >= FLUSH_LINE_THRESHOLD) {
+        // Fire-and-forget; don't await — backpressure on a slow MCP shouldn't
+        // block the agent's stdout pipe (could deadlock the agent process).
+        flushBuffer().catch(() => {});
+      } else {
+        scheduleFlush();
+      }
+    };
+
+    const consumeChunk = (chunk, carryRef, prefix) => {
+      const text = (carryRef.value || "") + chunk.toString("utf-8");
+      const lines = text.split("\n");
+      // Last element is partial (no trailing newline) → carry forward
+      carryRef.value = lines.pop() || "";
+      for (const line of lines) {
+        enqueue(prefix + line);
+      }
+    };
+
+    const stdoutCarryRef = { value: stdoutCarry };
+    const stderrCarryRef = { value: stderrCarry };
+
+    child.stdout.on("data", (chunk) => consumeChunk(chunk, stdoutCarryRef, ""));
+    child.stderr.on("data", (chunk) => consumeChunk(chunk, stderrCarryRef, "[stderr] "));
+
+    child.on("error", (err) => {
+      enqueue(`[callback-server] spawn error: ${err.message}`);
+      flushBuffer().finally(() => reject(err));
+    });
+
+    child.on("exit", (code) => {
+      // Flush any partial trailing line that wasn't terminated by \n
+      if (stdoutCarryRef.value) enqueue(stdoutCarryRef.value);
+      if (stderrCarryRef.value) enqueue("[stderr] " + stderrCarryRef.value);
+      // Cancel any pending timer and do one final flush before resolving so
+      // the operator's `runner-log` fetch sees the agent's last words.
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      enqueue(`[callback-server] agent process exited with code ${code ?? 0}`);
+      flushBuffer().finally(() => resolve(code ?? 0));
+    });
+  });
+}
+
+/**
+ * Build a logSink function bound to the MCP server's POST /runners/:id/log
+ * endpoint. Returns a function that takes an array of lines and POSTs them.
+ * Pulled out for testability — tests can pass a stub sink instead of hitting
+ * the network.
+ */
+export function buildLogSink({ url, instanceId, token, fetchImpl = fetch }) {
+  return async (lines) => {
+    if (!url || !instanceId || !lines.length) return;
+    const target = `${url}/runners/${encodeURIComponent(instanceId)}/log`;
+    try {
+      await fetchImpl(target, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ lines }),
+      });
+    } catch {
+      // Drop the chunk; the agent's exit code is the authoritative signal
+    }
+  };
+}
+
 async function reportStatus(status) {
   const url = process.env.GOAT_MCP_SERVER_URL;
   const id = process.env.GOAT_RUNNER_INSTANCE_ID;
@@ -414,7 +567,9 @@ export function checkFirewall({ exec = execSync, logger = console.error } = {}) 
 // Export the Express app and helpers so tests can import them without
 // triggering app.listen(). The script-mode entry below only runs when this
 // file is invoked directly (e.g. by cloud-init's `node callback-server/index.js`).
-export { app, waiters, pendingResponses, writeConfigFile, fileExists };
+// runAgentWithLogSink and buildLogSink are already exported via their `export`
+// declarations above (cycle 21-1).
+export { app, waiters, pendingResponses, writeConfigFile, fileExists, reportStatus };
 
 // Exposed for tests — verify that importing the module does NOT trigger
 // app.listen() (i.e. isMainModule is false under vitest).
