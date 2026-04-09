@@ -1,0 +1,13 @@
+{
+  "name": "goat-runner-callback",
+  "version": "1.0.0",
+  "description": "Lightweight callback server for gate relay on runner VMs",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}
