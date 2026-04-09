@@ -412,14 +412,43 @@ function writeConfigFile(filePath, fields) {
   const lines = ["---"];
   for (const [k, v] of Object.entries(fields)) {
     if (v === undefined || v === null) continue;
-    if (typeof v === "string" && (v.includes(":") || v.includes("#"))) {
-      lines.push(`${k}: "${v.replace(/"/g, '\\"')}"`);
-    } else {
-      lines.push(`${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`);
-    }
+    lines.push(`${k}: ${serializeYamlValue(v)}`);
   }
   lines.push("---", "");
   return fs.writeFile(filePath, lines.join("\n"), "utf-8");
+}
+
+/**
+ * Cycle 21-1-2 — Serialize a single YAML value safely.
+ *
+ * The previous implementation had a subtle but production-killing bug:
+ * STRING values were emitted unquoted unless they contained `:` or `#`.
+ * That left strings like "+16173317871" (a phone number) emitted as
+ * `notify-sms: +16173317871`, which YAML parses as the INTEGER
+ * 16173317871 because leading `+` is legal YAML for positive integers.
+ * The agent's Zod schema then rejected the parsed config because
+ * notify-sms is required to be a string. Result: every remote build
+ * died at config validation with "Invalid configuration" and operators
+ * had no way to debug it (until cycle 21-1's runner-log channel).
+ *
+ * The fix is structural: ALWAYS double-quote string values. JSON.stringify
+ * handles escaping (quotes, newlines, backslashes) and the resulting
+ * `"..."` is unambiguously a YAML string regardless of contents.
+ * Booleans, numbers, objects, and arrays use JSON.stringify directly,
+ * which produces YAML-compatible output (JSON is a strict subset of YAML).
+ *
+ * Exported for testability.
+ */
+export function serializeYamlValue(v) {
+  if (v === undefined || v === null) return "null";
+  if (typeof v === "string") {
+    // Always quote strings — eliminates the entire class of YAML
+    // type-coercion bugs (phone numbers parsed as ints, "yes"/"no"/
+    // "on"/"off" parsed as booleans, "1.0" parsed as a float, etc.).
+    return JSON.stringify(v);
+  }
+  // Booleans, numbers, arrays, objects all serialize correctly via JSON.
+  return JSON.stringify(v);
 }
 
 function runCommand(cmd, args, opts) {
