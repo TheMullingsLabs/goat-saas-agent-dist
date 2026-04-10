@@ -263,6 +263,7 @@ export function buildSpawnArgs(pipelineArgs = {}) {
   if (pipelineArgs.parallelAnalysis) args.push("--parallel-analysis");
   if (pipelineArgs.skipPrototype) args.push("--skip-prototype");
   if (pipelineArgs.fromStep) args.push("--from-step", pipelineArgs.fromStep);
+  if (pipelineArgs.oneStep) args.push("--one-step", pipelineArgs.oneStep);
   return args;
 }
 
