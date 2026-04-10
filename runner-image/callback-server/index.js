@@ -201,6 +201,17 @@ async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineA
   // /var/log/goat-callback.log via console.log so SSH-based debugging
   // remains a fallback when it works.
   await reportStatus("running");
+
+  // Cycle 22 (prompt #7): heartbeat — re-POST status=running every 60s so
+  // the MCP sweep job doesn't misclassify the runner as idle during long
+  // Claude Code spawns. Without this, the status table shows "idle" while
+  // the agent is actively generating code, which is misleading. The
+  // heartbeat is best-effort — failures are silently swallowed.
+  const HEARTBEAT_INTERVAL_MS = 60_000;
+  const heartbeat = setInterval(() => {
+    reportStatus("running").catch(() => {});
+  }, HEARTBEAT_INTERVAL_MS);
+
   const args = buildSpawnArgs(pipelineArgs);
   const spawnEnv = buildSpawnEnv({
     baseEnv: process.env,
@@ -214,21 +225,19 @@ async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineA
     instanceId: process.env.GOAT_RUNNER_INSTANCE_ID,
     token: process.env.GOAT_RUNNER_TOKEN,
   });
-  // Cycle 21-1-1 — resolve the agent binary by absolute path. install.sh
-  // installs to /root/.local/bin/goat-saas-agent and appends ~/.local/bin
-  // to root's .bashrc PATH, but cloud-init's `nohup node ...` does NOT
-  // source .bashrc, so the spawned callback server's PATH doesn't include
-  // the install dir. Spawning by bare name returns ENOENT and the agent
-  // never executes (this is the bug that killed every remote build for the
-  // last 12+ hours). Resolving the absolute path here makes the spawn
-  // robust regardless of how cloud-init was invoked.
+  // Cycle 21-1-1 — resolve the agent binary by absolute path.
   const agentBinary = resolveAgentBinary(spawnEnv);
-  const exit = await runAgentWithLogSink(
-    agentBinary,
-    args,
-    { cwd: WORKDIR, env: spawnEnv },
-    logSink,
-  );
+  let exit;
+  try {
+    exit = await runAgentWithLogSink(
+      agentBinary,
+      args,
+      { cwd: WORKDIR, env: spawnEnv },
+      logSink,
+    );
+  } finally {
+    clearInterval(heartbeat);
+  }
 
   // Early-wipe secrets.md immediately on agent exit (before status report).
   // Extracted to wipeSecretsAfterAgent() for testability.
