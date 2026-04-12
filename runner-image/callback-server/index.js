@@ -239,6 +239,23 @@ async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineA
     clearInterval(heartbeat);
   }
 
+  // Cycle 22: bulk-push the local log file to MCP as a fallback for when
+  // the per-line Replit DB appends fail (which happens every time the Replit
+  // DB token is invalid — observed 3 times in 48 hours). The local log file
+  // at /var/log/goat-callback.log always has the full output because
+  // runAgentWithLogSink tees every line to console.log.
+  try {
+    const { readFileSync: readLog } = await import("fs");
+    const localLog = readLog("/var/log/goat-callback.log", "utf-8").split("\n").filter(l => l.trim());
+    if (localLog.length > 0) {
+      // Cap at 200 lines (LOG_RING_CAP) — take the last 200
+      const capped = localLog.length > 200 ? localLog.slice(localLog.length - 200) : localLog;
+      await logSink(capped);
+    }
+  } catch {
+    // Best-effort — if the local log doesn't exist or the push fails, continue
+  }
+
   // Early-wipe secrets.md immediately on agent exit (before status report).
   // Extracted to wipeSecretsAfterAgent() for testability.
   await wipeSecretsAfterAgent(secretsPath);
