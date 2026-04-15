@@ -638,11 +638,12 @@ export function runAgentWithLogSink(cmd, args, opts, logSink) {
  * the network.
  */
 export function buildLogSink({ url, instanceId, token, fetchImpl = fetch }) {
+  let failCount = 0;
   return async (lines) => {
     if (!url || !instanceId || !lines.length) return;
     const target = `${url}/runners/${encodeURIComponent(instanceId)}/log`;
     try {
-      await fetchImpl(target, {
+      const res = await fetchImpl(target, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -650,8 +651,26 @@ export function buildLogSink({ url, instanceId, token, fetchImpl = fetch }) {
         },
         body: JSON.stringify({ lines }),
       });
-    } catch {
-      // Drop the chunk; the agent's exit code is the authoritative signal
+      if (!res.ok) {
+        failCount++;
+        // Log first 3 failures to local log so we can diagnose remotely
+        // via SSH or by reading /var/log/goat-callback.log
+        if (failCount <= 3) {
+          const body = await res.text().catch(() => "");
+          console.error(`[log-sink] POST ${target} returned ${res.status}: ${body}`);
+        } else if (failCount === 4) {
+          console.error(`[log-sink] Suppressing further failure logs (${failCount}+ failures)`);
+        }
+      } else {
+        failCount = 0; // reset on success
+      }
+    } catch (err) {
+      failCount++;
+      if (failCount <= 3) {
+        console.error(`[log-sink] POST ${target} threw: ${err.message || err}`);
+      } else if (failCount === 4) {
+        console.error(`[log-sink] Suppressing further failure logs (${failCount}+ failures)`);
+      }
     }
   };
 }
