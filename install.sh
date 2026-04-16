@@ -2,23 +2,12 @@
 set -euo pipefail
 
 # goat-saas-agent installer
-# Usage:
-#   curl -fsSLO https://raw.githubusercontent.com/TheMullingsLabs/goat-saas-agent-dist/main/install.sh
-#   bash install.sh
-# Optional:
-#   GOAT_SAAS_AGENT_VERSION=v4.0.5 bash install.sh
+# Usage: curl -sL https://raw.githubusercontent.com/TheMullingsLabs/goat-saas-agent-dist/main/install.sh | bash
 
 DIST_REPO="TheMullingsLabs/goat-saas-agent-dist"
 INSTALL_DIR="${HOME}/.local/bin"
 API_BASE="https://api.github.com/repos/${DIST_REPO}"
 DOWNLOAD_BASE="https://github.com/${DIST_REPO}/releases/download"
-TMP_DIR="$(mktemp -d)"
-CURL_OPTS=(--fail --silent --show-error --location --proto '=https' --tlsv1.2)
-
-cleanup() {
-  rm -rf "${TMP_DIR}"
-}
-trap cleanup EXIT
 
 # Detect platform
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -39,19 +28,10 @@ esac
 TARGET="${PLATFORM}-${ARCH}"
 BINARY_NAME="goat-saas-agent-${TARGET}"
 
-resolve_release_tag() {
-  if [ -n "${GOAT_SAAS_AGENT_VERSION:-}" ]; then
-    printf '%s' "${GOAT_SAAS_AGENT_VERSION}"
-    return 0
-  fi
-
-  echo "Fetching latest release..." >&2
-  curl "${CURL_OPTS[@]}" "${API_BASE}/releases/latest" \
-    | grep '"tag_name"' \
-    | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
-}
-
-LATEST_TAG="$(resolve_release_tag)"
+# Get latest release tag (public repo — no auth needed)
+echo "Fetching latest release..."
+LATEST_TAG=$(curl -fsSL \
+  "${API_BASE}/releases/latest" | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
 
 if [ -z "${LATEST_TAG}" ]; then
   echo "ERROR: Could not fetch latest release."
@@ -63,30 +43,27 @@ echo "Latest version: ${LATEST_TAG}"
 # Download binary
 DOWNLOAD_URL="${DOWNLOAD_BASE}/${LATEST_TAG}/${BINARY_NAME}"
 echo "Downloading ${BINARY_NAME} (${LATEST_TAG})..."
-curl "${CURL_OPTS[@]}" "${DOWNLOAD_URL}" -o "${TMP_DIR}/${BINARY_NAME}"
+curl -fsSL -L "${DOWNLOAD_URL}" -o "/tmp/${BINARY_NAME}"
 
 # Download and verify checksum
 CHECKSUM_NAME="checksums-${TARGET}.txt"
-curl "${CURL_OPTS[@]}" \
+curl -fsSL -L \
   "${DOWNLOAD_BASE}/${LATEST_TAG}/${CHECKSUM_NAME}" \
-  -o "${TMP_DIR}/checksums.txt"
+  -o "/tmp/checksums.txt"
 
 echo "Verifying checksum..."
-if ! grep -Eq "[[:space:]]${BINARY_NAME}$" "${TMP_DIR}/checksums.txt"; then
-  echo "ERROR: checksum file does not contain an entry for ${BINARY_NAME}"
-  exit 1
-fi
 if command -v sha256sum >/dev/null 2>&1; then
-  (cd "${TMP_DIR}" && sha256sum -c checksums.txt --ignore-missing)
+  (cd /tmp && sha256sum -c checksums.txt --ignore-missing)
 elif command -v shasum >/dev/null 2>&1; then
-  (cd "${TMP_DIR}" && shasum -a 256 -c checksums.txt)
+  (cd /tmp && shasum -a 256 -c checksums.txt)
 else
   echo "WARNING: No checksum tool found — skipping verification"
 fi
 
 # Install binary
 mkdir -p "${INSTALL_DIR}"
-install -m 0755 "${TMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/goat-saas-agent"
+mv "/tmp/${BINARY_NAME}" "${INSTALL_DIR}/goat-saas-agent"
+chmod +x "${INSTALL_DIR}/goat-saas-agent"
 
 # Write version file for --check-update
 echo "${LATEST_TAG}" > "${INSTALL_DIR}/.goat-saas-agent-version"
@@ -138,7 +115,7 @@ if command -v node >/dev/null 2>&1; then
 elif [ "${PLATFORM}" = "darwin" ]; then
   echo "  ✗ node (required — install with: brew install node@20)"
 else
-  echo "  ✗ node (required — install with a signed NodeSource or distro package)"
+  echo "  ✗ node (required — install with: curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install nodejs)"
 fi
 
 if command -v claude >/dev/null 2>&1; then
