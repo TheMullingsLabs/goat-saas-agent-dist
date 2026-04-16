@@ -12,6 +12,7 @@ import { promises as fs, writeFileSync } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
+import { timingSafeEqual } from "crypto";
 
 const WORKDIR = "/opt/goat-runner/workspace";
 const CONFIG_DIR = path.join(WORKDIR, "config");
@@ -22,6 +23,34 @@ let LISTEN_PORT = 0;
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
+
+function bearer(req) {
+  const h = req.headers.authorization || "";
+  return h.startsWith("Bearer ") ? h.slice(7) : "";
+}
+
+function requireRunnerToken(req, res, next) {
+  const expected = process.env.GOAT_RUNNER_TOKEN || "";
+  if (!expected) {
+    res.status(503).json({ error: "Runner token not configured" });
+    return;
+  }
+
+  const provided = bearer(req);
+  if (!provided) {
+    res.status(401).json({ error: "Runner token required" });
+    return;
+  }
+
+  const expectedBuf = Buffer.from(expected, "utf-8");
+  const providedBuf = Buffer.from(provided, "utf-8");
+  if (expectedBuf.length !== providedBuf.length || !timingSafeEqual(expectedBuf, providedBuf)) {
+    res.status(401).json({ error: "Invalid runner token" });
+    return;
+  }
+
+  next();
+}
 
 /**
  * Each gate has TWO halves on the runner:
@@ -71,10 +100,11 @@ app.post("/agent/wait-gate", (req, res) => {
 
 /**
  * POST /gate-response — receive gate response from MCP server.
- * Releases any parked /agent/wait-gate response, or stashes the answer for
- * replay if the agent hasn't polled yet.
+ * Authenticated with the per-runner GOAT_RUNNER_TOKEN because the callback
+ * port may be reachable over the network. Releases any parked /agent/wait-gate
+ * response, or stashes the answer for replay if the agent hasn't polled yet.
  */
-app.post("/gate-response", (req, res) => {
+app.post("/gate-response", requireRunnerToken, (req, res) => {
   const { gateId, response, operatorAnswer } = req.body;
 
   if (!gateId || !response) {
@@ -95,12 +125,15 @@ app.post("/gate-response", (req, res) => {
 
 /**
  * POST /provision-config — receive secrets + config and start the pipeline.
+ * Authenticated with the per-runner GOAT_RUNNER_TOKEN even though cloud-init
+ * posts over loopback. This keeps the endpoint safe if the callback port is
+ * accidentally exposed beyond localhost.
  * Body shape (from MCP server's /runners/:id/register response):
  *   { buildId, githubRepo, config: { app, agent, integrations },
  *     secrets: { anthropicApiKey, githubPat, dbPassword, goatSaasApiKey },
  *     pipelineArgs }
  */
-app.post("/provision-config", async (req, res) => {
+app.post("/provision-config", requireRunnerToken, async (req, res) => {
   const { buildId, githubRepo, config, secrets, pipelineArgs } = req.body || {};
   if (!buildId || !githubRepo || !config || !secrets) {
     res.status(400).json({ error: "buildId, githubRepo, config, and secrets are required" });
