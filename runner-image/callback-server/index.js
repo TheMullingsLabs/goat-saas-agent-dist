@@ -481,16 +481,20 @@ export async function configureGitCredentials({ workdir, githubRepo, githubPat, 
   // a clear error if the helper somehow returns nothing, instead of silently
   // hanging on an interactive prompt that has no TTY to answer.
   const helperScript = `!f() { test "$1" = get && echo username=x-access-token && echo password=$GH_TOKEN; }; f`;
+  // --replace-all: if the snapshot image or a prior provision left multiple
+  // credential.helper values, a plain `git config` fails with "cannot
+  // overwrite multiple values with a single value". --replace-all clears
+  // all existing values before writing the new one.
   await commandRunner(
     "git",
-    ["config", "--global", "credential.https://github.com.helper", helperScript],
+    ["config", "--global", "--replace-all", "credential.https://github.com.helper", helperScript],
     { cwd: workdir },
   );
   // Also set the same helper at the unscoped credential.helper key as a
   // fallback for any git internal that doesn't pick up the host-scoped one.
   await commandRunner(
     "git",
-    ["config", "--global", "credential.helper", helperScript],
+    ["config", "--global", "--replace-all", "credential.helper", helperScript],
     { cwd: workdir },
   );
 }
