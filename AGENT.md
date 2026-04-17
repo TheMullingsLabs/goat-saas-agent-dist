@@ -18,6 +18,8 @@ Maintain the released installer and cloud bootstrap scripts for `goat-saas-agent
 - `cloud-setup.sh`
 - `README.md`
 
+Mandatory instruction: follow the monorepo root `.claude/feedback_workflow_rules.md` for every change in this repo.
+
 ## Non-Negotiable Rules
 
 - Keep the install flow non-interactive and safe for curl-pipe execution.
