@@ -310,7 +310,7 @@ async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineA
 export function buildSpawnArgs(pipelineArgs = {}) {
   const args = ["run", "--skip-codex", "--sync-state", "--no-update-check", "--analysis-model", "claude-sonnet-4-6"];
   if (pipelineArgs.autoApprove) args.push("--auto-approve");
-  if (pipelineArgs.parallelAnalysis) args.push("--parallel-analysis");
+  if (pipelineArgs.sequentialAnalysis) args.push("--sequential-analysis");
   if (pipelineArgs.skipPrototype) args.push("--skip-prototype");
   if (pipelineArgs.fromStep) args.push("--from-step", pipelineArgs.fromStep);
   if (pipelineArgs.oneStep) args.push("--one-step", pipelineArgs.oneStep);
