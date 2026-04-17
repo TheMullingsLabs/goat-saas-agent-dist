@@ -318,6 +318,7 @@ export function buildSpawnArgs(pipelineArgs = {}) {
   if (pipelineArgs.autoApprove) args.push("--auto-approve");
   if (pipelineArgs.sequentialAnalysis) args.push("--sequential-analysis");
   if (pipelineArgs.skipPrototype) args.push("--skip-prototype");
+  if (pipelineArgs.optimizeCost) args.push("--optimize-cost");
   if (pipelineArgs.fromStep) args.push("--from-step", pipelineArgs.fromStep);
   if (pipelineArgs.oneStep) args.push("--one-step", pipelineArgs.oneStep);
   return args;
