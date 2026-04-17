@@ -143,11 +143,13 @@ app.post("/provision-config", requireRunnerToken, async (req, res) => {
   res.json({ success: true, status: "starting" });
 
   // Run provisioning asynchronously so we don't block the HTTP response.
-  provisionAndRun({ buildId, githubRepo, config, secrets, pipelineArgs }).catch((err) => {
+  provisionAndRunImpl({ buildId, githubRepo, config, secrets, pipelineArgs }).catch((err) => {
     console.error("[provision] failed:", err);
     reportStatus("destroyed").catch(() => {});
   });
 });
+
+let provisionAndRunImpl = provisionAndRun;
 
 async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineArgs }) {
   await reportStatus("cloning");
@@ -294,6 +296,10 @@ async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineA
   await wipeSecretsAfterAgent(secretsPath);
 
   await reportStatus(exit === 0 ? "idle" : "destroyed");
+}
+
+export function setProvisionAndRunImplementationForTests(fn) {
+  provisionAndRunImpl = fn || provisionAndRun;
 }
 
 /**
