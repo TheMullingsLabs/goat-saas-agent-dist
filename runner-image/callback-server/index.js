@@ -316,6 +316,7 @@ export function setProvisionAndRunImplementationForTests(fn) {
 export function buildSpawnArgs(pipelineArgs = {}) {
   const args = ["run", "--skip-codex", "--sync-state", "--no-update-check", "--analysis-model", "claude-sonnet-4-6"];
   if (pipelineArgs.autoApprove) args.push("--auto-approve");
+  if (pipelineArgs.force) args.push("--force");
   if (pipelineArgs.sequentialAnalysis) args.push("--sequential-analysis");
   if (pipelineArgs.skipPrototype) args.push("--skip-prototype");
   if (pipelineArgs.optimizeCost) args.push("--optimize-cost");
