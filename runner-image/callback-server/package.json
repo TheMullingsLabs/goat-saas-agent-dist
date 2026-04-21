@@ -6,7 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "vitest run",
+    "test": "node ./run-vitest.mjs run",
     "syntax-check": "node --check index.js"
   },
   "dependencies": {
