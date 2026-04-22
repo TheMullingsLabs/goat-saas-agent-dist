@@ -320,6 +320,11 @@ export function buildSpawnArgs(pipelineArgs = {}) {
   if (pipelineArgs.sequentialAnalysis) args.push("--sequential-analysis");
   if (pipelineArgs.skipPrototype) args.push("--skip-prototype");
   if (pipelineArgs.optimizeCost) args.push("--optimize-cost");
+  // Ship Now #3/#7 — wall-clock optimization flags propagated from the
+  // MCP trigger through to the runner agent. Both are additive booleans;
+  // absence reverts to pre-refactor behavior.
+  if (pipelineArgs.selectiveTests) args.push("--selective-tests");
+  if (pipelineArgs.skipAnalysis) args.push("--skip-analysis");
   if (pipelineArgs.fromStep) args.push("--from-step", pipelineArgs.fromStep);
   if (pipelineArgs.oneStep) args.push("--one-step", pipelineArgs.oneStep);
   return args;
