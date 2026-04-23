@@ -173,6 +173,7 @@ async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineA
   // 4. Write secrets.md with 0o600 permissions.
   const secretsFields = {
     "anthropic-api-key": secrets.anthropicApiKey,
+    "openai-api-key": secrets.openaiApiKey || "",
     "github-pat": secrets.githubPat,
     "db-password": secrets.dbPassword || "",
     "vercel-token": secrets.vercelToken || "",
@@ -220,7 +221,10 @@ async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineA
   //    if credentials.json was baked into the snapshot image).
   const mcpServerUrl = process.env.GOAT_MCP_SERVER_URL || "";
   if (secrets.goatSaasApiKey && mcpServerUrl) {
-    await writeAgentCredentials(secrets.goatSaasApiKey, mcpServerUrl);
+    await writeAgentCredentials(secrets.goatSaasApiKey, mcpServerUrl, {
+      anthropicApiKey: secrets.anthropicApiKey,
+      openaiApiKey: secrets.openaiApiKey,
+    });
   }
 
   // 5. Run the pipeline. Args and env are built by pure helpers
@@ -254,6 +258,8 @@ async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineA
     buildId,
     githubPat: secrets.githubPat,
     anthropicApiKey: secrets.anthropicApiKey,
+    openaiApiKey: secrets.openaiApiKey,
+    codeAgent: pipelineArgs?.codeAgent,
   });
   const logSink = buildLogSink({
     url: process.env.GOAT_MCP_SERVER_URL,
@@ -320,6 +326,7 @@ export function buildSpawnArgs(pipelineArgs = {}) {
   if (pipelineArgs.sequentialAnalysis) args.push("--sequential-analysis");
   if (pipelineArgs.skipPrototype) args.push("--skip-prototype");
   if (pipelineArgs.optimizeCost) args.push("--optimize-cost");
+  if (pipelineArgs.codeAgent) args.push("--code-agent", pipelineArgs.codeAgent);
   // Ship Now #3/#7 — wall-clock optimization flags propagated from the
   // MCP trigger through to the runner agent. Both are additive booleans;
   // absence reverts to pre-refactor behavior.
@@ -374,10 +381,19 @@ export function resolveAgentBinary(env = process.env, exists = fsExistsSync) {
  *   - GOAT_SAAS_BUILD_ID is the MCP-side buildId (fixes the build ID schism)
  *   - GH_TOKEN is the GitHub PAT for gh credential helper
  *   - ANTHROPIC_API_KEY enables Claude Code to authenticate without interactive login
+ *   - OPENAI_API_KEY enables Codex CLI when pipelineArgs.codeAgent === "codex"
  *
  * Pure function — takes the base env + runner config, returns a new object.
  */
-export function buildSpawnEnv({ baseEnv, callbackPort, buildId, githubPat, anthropicApiKey }) {
+export function buildSpawnEnv({
+  baseEnv,
+  callbackPort,
+  buildId,
+  githubPat,
+  anthropicApiKey,
+  openaiApiKey,
+  codeAgent,
+}) {
   // Cycle 21-1-1 — also prepend ~/.local/bin to PATH so subprocesses
   // spawned BY the agent (e.g. claude CLI, gh) can also find binaries
   // installed there. The primary fix for the agent itself is
@@ -407,6 +423,9 @@ export function buildSpawnEnv({ baseEnv, callbackPort, buildId, githubPat, anthr
   if (anthropicApiKey) {
     env.ANTHROPIC_API_KEY = anthropicApiKey;
   }
+  if (codeAgent === "codex" && openaiApiKey) {
+    env.OPENAI_API_KEY = openaiApiKey;
+  }
   return env;
 }
 
@@ -419,12 +438,12 @@ export function buildSpawnEnv({ baseEnv, callbackPort, buildId, githubPat, anthr
  * Best-effort — silently returns false on any error. The VM destroy is the
  * ultimate safety net for any credential residue.
  */
-export async function writeAgentCredentials(apiKey, serverUrl) {
+export async function writeAgentCredentials(apiKey, serverUrl, extra = {}) {
   try {
     const dir = path.join(homedir(), ".goat-saas-agent");
     await fs.mkdir(dir, { recursive: true });
     const credPath = path.join(dir, "credentials.json");
-    await fs.writeFile(credPath, JSON.stringify({ apiKey, serverUrl }, null, 2), { mode: 0o600 });
+    await fs.writeFile(credPath, JSON.stringify({ apiKey, serverUrl, ...extra }, null, 2), { mode: 0o600 });
     return true;
   } catch {
     return false;
