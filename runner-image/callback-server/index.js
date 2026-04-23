@@ -260,6 +260,7 @@ async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineA
     anthropicApiKey: secrets.anthropicApiKey,
     openaiApiKey: secrets.openaiApiKey,
     codeAgent: pipelineArgs?.codeAgent,
+    multiAgentCodeEngine: pipelineArgs?.multiAgentCodeEngine,
   });
   const logSink = buildLogSink({
     url: process.env.GOAT_MCP_SERVER_URL,
@@ -327,6 +328,7 @@ export function buildSpawnArgs(pipelineArgs = {}) {
   if (pipelineArgs.skipPrototype) args.push("--skip-prototype");
   if (pipelineArgs.optimizeCost) args.push("--optimize-cost");
   if (pipelineArgs.codeAgent) args.push("--code-agent", pipelineArgs.codeAgent);
+  if (pipelineArgs.multiAgentCodeEngine) args.push("--multi-agent-code-engine", pipelineArgs.multiAgentCodeEngine);
   // Ship Now #3/#7 — wall-clock optimization flags propagated from the
   // MCP trigger through to the runner agent. Both are additive booleans;
   // absence reverts to pre-refactor behavior.
@@ -393,6 +395,7 @@ export function buildSpawnEnv({
   anthropicApiKey,
   openaiApiKey,
   codeAgent,
+  multiAgentCodeEngine,
 }) {
   // Cycle 21-1-1 — also prepend ~/.local/bin to PATH so subprocesses
   // spawned BY the agent (e.g. claude CLI, gh) can also find binaries
@@ -423,7 +426,7 @@ export function buildSpawnEnv({
   if (anthropicApiKey) {
     env.ANTHROPIC_API_KEY = anthropicApiKey;
   }
-  if (codeAgent === "codex" && openaiApiKey) {
+  if ((codeAgent === "codex" || multiAgentCodeEngine === "codex") && openaiApiKey) {
     env.OPENAI_API_KEY = openaiApiKey;
   }
   return env;
