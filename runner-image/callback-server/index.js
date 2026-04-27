@@ -261,6 +261,7 @@ async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineA
     openaiApiKey: secrets.openaiApiKey,
     codeAgent: pipelineArgs?.codeAgent,
     multiAgentCodeEngine: pipelineArgs?.multiAgentCodeEngine,
+    codexExecutor: pipelineArgs?.codexExecutor,
   });
   const logSink = buildLogSink({
     url: process.env.GOAT_MCP_SERVER_URL,
@@ -334,6 +335,20 @@ export function buildSpawnArgs(pipelineArgs = {}) {
   // absence reverts to pre-refactor behavior.
   if (pipelineArgs.selectiveTests) args.push("--selective-tests");
   if (pipelineArgs.skipAnalysis) args.push("--skip-analysis");
+  // TODO #54 — Codex executor selection. The runner droplet has no
+  // ~/.codex/auth.json so subscription/hybrid are local-only and the
+  // MCP server's TriggerSchema rejects them. Defense-in-depth: if such
+  // a value somehow arrives, throw rather than silently degrade.
+  if (pipelineArgs.codexExecutor !== undefined && pipelineArgs.codexExecutor !== "api") {
+    throw new Error(
+      `pipelineArgs.codexExecutor=${pipelineArgs.codexExecutor} is not allowed on remote runners; only "api" is supported. ` +
+      `The MCP server should have rejected this at the schema boundary.`
+    );
+  }
+  // Always append --codex-executor api so the runner's bootstrap banner
+  // reflects the resolved mode, even if pipelineArgs.codexExecutor was
+  // omitted (the agent-side default is already api).
+  args.push("--codex-executor", "api");
   if (pipelineArgs.fromStep) args.push("--from-step", pipelineArgs.fromStep);
   if (pipelineArgs.oneStep) args.push("--one-step", pipelineArgs.oneStep);
   return args;
@@ -396,6 +411,7 @@ export function buildSpawnEnv({
   openaiApiKey,
   codeAgent,
   multiAgentCodeEngine,
+  codexExecutor,
 }) {
   // Cycle 21-1-1 — also prepend ~/.local/bin to PATH so subprocesses
   // spawned BY the agent (e.g. claude CLI, gh) can also find binaries
@@ -426,7 +442,14 @@ export function buildSpawnEnv({
   if (anthropicApiKey) {
     env.ANTHROPIC_API_KEY = anthropicApiKey;
   }
-  if ((codeAgent === "codex" || multiAgentCodeEngine === "codex") && openaiApiKey) {
+  // TODO #54 — Set OPENAI_API_KEY only when a Codex surface is active
+  // AND the resolved Codex executor is `api`. The remote schema only
+  // accepts `api` for codexExecutor (subscription/hybrid are rejected at
+  // the boundary), so the codexExecutor==="subscription" branch is
+  // unreachable on runners; the guard stays for defense-in-depth.
+  const codexAnyActive = codeAgent === "codex" || multiAgentCodeEngine === "codex";
+  const codexInjectKey = codexExecutor === undefined || codexExecutor === "api";
+  if (codexAnyActive && codexInjectKey && openaiApiKey) {
     env.OPENAI_API_KEY = openaiApiKey;
   }
   return env;
