@@ -1,0 +1,13 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local build artifacts
+node_modules/
+dist/
+
+# Agent work + multi-agent runtime state — local-only audit trail (cycle plans,
+# manifests, completion reports, dashboard.json, integration-verify-history).
+# Never committed.
+.goat-saas/
+docs/agents/
