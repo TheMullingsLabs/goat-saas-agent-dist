@@ -6,8 +6,6 @@ set -euo pipefail
 
 DIST_REPO="TheMullingsLabs/goat-saas-agent-dist"
 INSTALL_DIR="${HOME}/.local/bin"
-PRIMARY_COMMAND="goatsaas"
-LEGACY_COMMAND="goat-saas-agent"
 API_BASE="https://api.github.com/repos/${DIST_REPO}"
 DOWNLOAD_BASE="https://github.com/${DIST_REPO}/releases/download"
 
@@ -64,17 +62,8 @@ fi
 
 # Install binary
 mkdir -p "${INSTALL_DIR}"
-mv "/tmp/${BINARY_NAME}" "${INSTALL_DIR}/${PRIMARY_COMMAND}"
-chmod +x "${INSTALL_DIR}/${PRIMARY_COMMAND}"
-
-# Keep the historical command as a compatibility alias during the telemetry soak.
-rm -f "${INSTALL_DIR}/${LEGACY_COMMAND}"
-if ln -s "${PRIMARY_COMMAND}" "${INSTALL_DIR}/${LEGACY_COMMAND}" 2>/dev/null; then
-  :
-else
-  cp "${INSTALL_DIR}/${PRIMARY_COMMAND}" "${INSTALL_DIR}/${LEGACY_COMMAND}"
-  chmod +x "${INSTALL_DIR}/${LEGACY_COMMAND}"
-fi
+mv "/tmp/${BINARY_NAME}" "${INSTALL_DIR}/goat-saas-agent"
+chmod +x "${INSTALL_DIR}/goat-saas-agent"
 
 # Write version file for --check-update
 echo "${LATEST_TAG}" > "${INSTALL_DIR}/.goat-saas-agent-version"
@@ -108,8 +97,7 @@ if ! echo "${PATH}" | grep -q "${INSTALL_DIR}"; then
 fi
 
 echo ""
-echo "  ✓ ${PRIMARY_COMMAND} ${LATEST_TAG} installed to ${INSTALL_DIR}/${PRIMARY_COMMAND}"
-echo "  ✓ ${LEGACY_COMMAND} compatibility alias installed"
+echo "  ✓ goat-saas-agent ${LATEST_TAG} installed to ${INSTALL_DIR}/goat-saas-agent"
 echo ""
 
 # Check runtime dependencies
@@ -138,9 +126,9 @@ fi
 
 echo ""
 if [ -n "${PATH_UPDATED}" ]; then
-  echo "  To use ${PRIMARY_COMMAND} in this terminal, run:"
+  echo "  To use goat-saas-agent in this terminal, run:"
   echo ""
   echo "    source ${PATH_UPDATED}"
   echo ""
 fi
-echo "Run '${PRIMARY_COMMAND} setup' to activate with your API key."
+echo "Run 'goat-saas-agent setup' to activate with your API key."
