@@ -6,7 +6,7 @@
 # Usage:
 #   1. Run cloud-setup.sh first (installs all dependencies)
 #   2. Run: claude login
-#   3. Run: goat-saas-agent setup
+#   3. Run: goatsaas setup
 #   4. Run this script: bash cloud-post-setup.sh <git-name> <git-email>
 #
 # Example:
@@ -47,7 +47,7 @@ fi
 
 # Agent must be set up
 if [ ! -f /root/.goat-saas-agent/credentials.json ]; then
-  echo "ERROR: goat-saas-agent not activated. Run 'goat-saas-agent setup' first."
+  echo "ERROR: goatsaas not activated. Run 'goatsaas setup' first."
   exit 1
 fi
 
@@ -56,16 +56,30 @@ echo ""
 
 # ── Step 1: Copy binary to shared location ──────────────────────────────────
 
-echo "[1/4] Making goat-saas-agent available to all users..."
-if [ -f /root/.local/bin/goat-saas-agent ]; then
-  rm -f /usr/local/bin/goat-saas-agent
-  cp /root/.local/bin/goat-saas-agent /usr/local/bin/goat-saas-agent
-  chmod +x /usr/local/bin/goat-saas-agent
-  echo "  Copied to /usr/local/bin/goat-saas-agent ✓"
-elif [ -f /usr/local/bin/goat-saas-agent ]; then
-  echo "  Already at /usr/local/bin/goat-saas-agent ✓"
+echo "[1/4] Making goatsaas available to all users..."
+SOURCE_BINARY=""
+if [ -f /root/.local/bin/goatsaas ]; then
+  SOURCE_BINARY="/root/.local/bin/goatsaas"
+elif [ -f /root/.local/bin/goat-saas-agent ]; then
+  SOURCE_BINARY="/root/.local/bin/goat-saas-agent"
+fi
+
+if [ -n "${SOURCE_BINARY}" ]; then
+  rm -f /usr/local/bin/goatsaas /usr/local/bin/goat-saas-agent
+  cp "${SOURCE_BINARY}" /usr/local/bin/goatsaas
+  chmod +x /usr/local/bin/goatsaas
+  if ln -s goatsaas /usr/local/bin/goat-saas-agent 2>/dev/null; then
+    :
+  else
+    cp /usr/local/bin/goatsaas /usr/local/bin/goat-saas-agent
+    chmod +x /usr/local/bin/goat-saas-agent
+  fi
+  echo "  Copied to /usr/local/bin/goatsaas ✓"
+  echo "  goat-saas-agent compatibility alias available ✓"
+elif [ -f /usr/local/bin/goatsaas ]; then
+  echo "  Already at /usr/local/bin/goatsaas ✓"
 else
-  echo "  ERROR: goat-saas-agent binary not found. Run install.sh first."
+  echo "  ERROR: goatsaas binary not found. Run install.sh first."
   exit 1
 fi
 
@@ -124,8 +138,8 @@ echo "    1. su - builder"
 echo "    2. gh auth login"
 echo "    3. gh repo clone <org>/<repo>"
 echo "    4. (From local terminal) scp secrets.md to the server"
-echo "    5. cd <repo> && goat-saas-agent run --auto-approve --claude-code-analysis-model claude-sonnet-4-6"
+echo "    5. cd <repo> && goatsaas run --auto-approve --claude-code-analysis-model claude-sonnet-4-6"
 echo ""
 echo "  To skip database setup (already done as root):"
-echo "    goat-saas-agent run --from-step claude-code-phase-1 --auto-approve --claude-code-analysis-model claude-sonnet-4-6"
+echo "    goatsaas run --from-step claude-code-phase-1 --auto-approve --claude-code-analysis-model claude-sonnet-4-6"
 echo "============================================"

@@ -47,9 +47,9 @@ echo "  Claude Code installed"
 
 # ── goat-saas-agent ───────────────────────────────────────────────────────────
 
-echo "[6/8] Installing goat-saas-agent..."
+echo "[6/8] Installing goatsaas..."
 curl -sL https://raw.githubusercontent.com/TheMullingsLabs/goat-saas-agent-dist/main/install.sh | bash
-echo "  goat-saas-agent installed"
+echo "  goatsaas installed"
 
 # ── Verification ──────────────────────────────────────────────────────────────
 
@@ -61,7 +61,7 @@ echo "  npm:             $(npm --version)"
 echo "  PostgreSQL:      $(pg_isready -q && echo 'running' || echo 'not running')"
 echo "  GitHub CLI:      $(gh --version 2>/dev/null | head -1 || echo 'not found')"
 echo "  Claude Code:     $(claude --version 2>/dev/null || echo 'installed (run claude login to authenticate)')"
-echo "  goat-saas-agent: $(goat-saas-agent --version 2>/dev/null || echo 'installed')"
+echo "  goatsaas:        $(goatsaas --version 2>/dev/null || echo 'installed')"
 echo "  tmux:            $(tmux -V)"
 echo ""
 echo "============================================"
@@ -70,13 +70,13 @@ echo ""
 echo "[8/8] Next steps:"
 echo "    1. claude login"
 echo "    2. gh auth login"
-echo "    3. goat-saas-agent setup"
+echo "    3. goatsaas setup"
 echo "    4. gh repo clone <org>/<repo>"
 echo "    5. cd <your-repo>"
 echo ""
 echo "  Start a build (always use tmux):"
 echo "    tmux new -s build"
-echo "    goat-saas-agent run"
+echo "    goatsaas run"
 echo ""
 echo "  You can safely close the terminal."
 echo "  The build continues on the server."

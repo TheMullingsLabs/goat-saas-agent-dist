@@ -15,6 +15,6 @@ The `runner-image/callback-server/` directory in this repo is kept **byte-identi
 ## Security Notes
 
 - `install.sh` supports `GOAT_SAAS_AGENT_VERSION=<tag>` for version-pinned installs.
-- `install.sh` downloads the released `goat-saas-agent-linux-x64` / `goat-saas-agent-linux-arm64` binary from GitHub release assets and verifies the published SHA-256 checksum before installing it. This is the same verification path used by `setup.sh` when it invokes `install.sh` during runner-image snapshot builds.
+- `install.sh` downloads the released `goat-saas-agent-linux-x64` / `goat-saas-agent-linux-arm64` binary from GitHub release assets, verifies the published SHA-256 checksum, installs it as `goatsaas`, and keeps `goat-saas-agent` as a compatibility alias. This is the same verification path used by `setup.sh` when it invokes `install.sh` during runner-image snapshot builds.
 - `cloud-setup.sh` installs Node.js through a signed NodeSource apt repository setup instead of piping a remote script into `bash`.
 - `cloud-setup.sh` installs the released `goatsaas` binary directly from GitHub release assets and verifies the published SHA-256 checksum before placing it in `/usr/local/bin`.
