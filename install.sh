@@ -62,9 +62,8 @@ fi
 
 # Install binary
 mkdir -p "${INSTALL_DIR}"
-mv "/tmp/${BINARY_NAME}" "${INSTALL_DIR}/goatsaas"
-chmod +x "${INSTALL_DIR}/goatsaas"
-ln -sf "${INSTALL_DIR}/goatsaas" "${INSTALL_DIR}/goat-saas-agent"
+mv "/tmp/${BINARY_NAME}" "${INSTALL_DIR}/goat-saas-agent"
+chmod +x "${INSTALL_DIR}/goat-saas-agent"
 
 # Write version file for --check-update
 echo "${LATEST_TAG}" > "${INSTALL_DIR}/.goat-saas-agent-version"
@@ -98,8 +97,7 @@ if ! echo "${PATH}" | grep -q "${INSTALL_DIR}"; then
 fi
 
 echo ""
-echo "  ✓ goatsaas ${LATEST_TAG} installed to ${INSTALL_DIR}/goatsaas"
-echo "    (legacy alias: ${INSTALL_DIR}/goat-saas-agent)"
+echo "  ✓ goat-saas-agent ${LATEST_TAG} installed to ${INSTALL_DIR}/goat-saas-agent"
 echo ""
 
 # Check runtime dependencies
@@ -128,9 +126,9 @@ fi
 
 echo ""
 if [ -n "${PATH_UPDATED}" ]; then
-  echo "  To use goatsaas in this terminal, run:"
+  echo "  To use goat-saas-agent in this terminal, run:"
   echo ""
   echo "    source ${PATH_UPDATED}"
   echo ""
 fi
-echo "Run 'goatsaas setup' to activate with your API key."
+echo "Run 'goat-saas-agent setup' to activate with your API key."
