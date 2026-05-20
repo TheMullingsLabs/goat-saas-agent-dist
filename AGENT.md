@@ -4,7 +4,7 @@ Purpose: operating guide for coding agents working in `goat-saas-agent-dist`.
 
 ## Mission
 
-Maintain the released installer and cloud bootstrap scripts for `goat-saas-agent` without breaking platform detection, checksum verification, dependency setup, or operator onboarding.
+Maintain the released installer and cloud bootstrap scripts for `goatsaas` (primary binary name) and `goat-saas-agent` (legacy alias retained via deprecation shim, TODO #100 Phase A) without breaking platform detection, checksum verification, dependency setup, or operator onboarding.
 
 ## Shape
 
