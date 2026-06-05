@@ -28,9 +28,17 @@ esac
 TARGET="${PLATFORM}-${ARCH}"
 BINARY_NAME="goat-saas-agent-${TARGET}"
 
-# Get latest release tag (public repo — no auth needed)
+# Get latest release tag. The repo is public, but api.github.com allows only
+# 60 unauthenticated requests/hour per IP — a release day exhausts that and
+# this call 403s (release-and-refresh step-4 failure, 2026-06-05). Use a
+# token when the caller provides one (GH_TOKEN or GITHUB_TOKEN).
+AUTH_HEADER=()
+INSTALL_GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+if [ -n "${INSTALL_GH_TOKEN}" ]; then
+  AUTH_HEADER=(-H "Authorization: Bearer ${INSTALL_GH_TOKEN}")
+fi
 echo "Fetching latest release..."
-LATEST_TAG=$(curl -fsSL \
+LATEST_TAG=$(curl -fsSL ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} \
   "${API_BASE}/releases/latest" | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
 
 if [ -z "${LATEST_TAG}" ]; then
