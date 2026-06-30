@@ -335,6 +335,7 @@ export function buildSpawnArgs(pipelineArgs = {}) {
   // absence reverts to pre-refactor behavior.
   if (pipelineArgs.selectiveTests) args.push("--selective-tests");
   if (pipelineArgs.skipAnalysis) args.push("--skip-analysis");
+  if (pipelineArgs.noTests) args.push("--no-tests");
   // TODO #54 — Codex executor selection. The runner droplet has no
   // ~/.codex/auth.json so subscription/hybrid are local-only and the
   // MCP server's TriggerSchema rejects them. Defense-in-depth: if such
