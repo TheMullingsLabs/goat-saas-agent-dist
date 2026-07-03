@@ -326,7 +326,6 @@ export function buildSpawnArgs(pipelineArgs = {}) {
   if (pipelineArgs.autoApprove) args.push("--auto-approve");
   if (pipelineArgs.force) args.push("--force");
   if (pipelineArgs.sequentialAnalysis) args.push("--sequential-analysis");
-  if (pipelineArgs.skipPrototype) args.push("--skip-prototype");
   if (pipelineArgs.optimizeCost) args.push("--optimize-cost");
   if (pipelineArgs.codeAgent) args.push("--code-agent", pipelineArgs.codeAgent);
   if (pipelineArgs.multiAgentCodeEngine) args.push("--multi-agent-code-engine", pipelineArgs.multiAgentCodeEngine);
