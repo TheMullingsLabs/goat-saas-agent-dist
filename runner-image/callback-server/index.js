@@ -30,7 +30,7 @@ function bearer(req) {
 }
 
 function requireRunnerToken(req, res, next) {
-  const expected = process.env.GOAT_RUNNER_TOKEN || "";
+  const expected = process.env.GOATSAAS_RUNNER_TOKEN || "";
   if (!expected) {
     res.status(503).json({ error: "Runner token not configured" });
     return;
@@ -100,7 +100,7 @@ app.post("/agent/wait-gate", (req, res) => {
 
 /**
  * POST /gate-response — receive gate response from MCP server.
- * Authenticated with the per-runner GOAT_RUNNER_TOKEN because the callback
+ * Authenticated with the per-runner GOATSAAS_RUNNER_TOKEN because the callback
  * port may be reachable over the network. Releases any parked /agent/wait-gate
  * response, or stashes the answer for replay if the agent hasn't polled yet.
  */
@@ -125,7 +125,7 @@ app.post("/gate-response", requireRunnerToken, (req, res) => {
 
 /**
  * POST /provision-config — receive secrets + config and start the pipeline.
- * Authenticated with the per-runner GOAT_RUNNER_TOKEN even though cloud-init
+ * Authenticated with the per-runner GOATSAAS_RUNNER_TOKEN even though cloud-init
  * posts over loopback. This keeps the endpoint safe if the callback port is
  * accidentally exposed beyond localhost.
  * Body shape (from MCP server's /runners/:id/register response):
@@ -219,7 +219,7 @@ async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineA
   //    Both are best-effort — if either fails, the pipeline continues (the
   //    build reporter is fire-and-forget and the license check may still pass
   //    if credentials.json was baked into the snapshot image).
-  const mcpServerUrl = process.env.GOAT_MCP_SERVER_URL || "";
+  const mcpServerUrl = process.env.GOATSAAS_MCP_SERVER_URL || "";
   if (secrets.goatSaasApiKey && mcpServerUrl) {
     await writeAgentCredentials(secrets.goatSaasApiKey, mcpServerUrl, {
       anthropicApiKey: secrets.anthropicApiKey,
@@ -264,9 +264,9 @@ async function provisionAndRun({ buildId, githubRepo, config, secrets, pipelineA
     codexExecutor: pipelineArgs?.codexExecutor,
   });
   const logSink = buildLogSink({
-    url: process.env.GOAT_MCP_SERVER_URL,
-    instanceId: process.env.GOAT_RUNNER_INSTANCE_ID,
-    token: process.env.GOAT_RUNNER_TOKEN,
+    url: process.env.GOATSAAS_MCP_SERVER_URL,
+    instanceId: process.env.GOATSAAS_RUNNER_INSTANCE_ID,
+    token: process.env.GOATSAAS_RUNNER_TOKEN,
   });
   // Cycle 21-1-1 — resolve the agent binary by absolute path.
   const agentBinary = resolveAgentBinary(spawnEnv);
@@ -393,9 +393,9 @@ export function resolveAgentBinary(env = process.env, exists = fsExistsSync) {
 /**
  * Build the env var object for spawning `goat-saas-agent run`. Copies the
  * base process.env and overlays the runner-specific vars the agent needs:
- *   - GOAT_REMOTE=1 enables runner-mode detection
- *   - GOAT_CALLBACK_PORT tells the agent's RemoteGateHandler where to long-poll
- *   - GOAT_SAAS_BUILD_ID is the MCP-side buildId (fixes the build ID schism)
+ *   - GOATSAAS_REMOTE=1 enables runner-mode detection
+ *   - GOATSAAS_CALLBACK_PORT tells the agent's RemoteGateHandler where to long-poll
+ *   - GOATSAAS_BUILD_ID is the MCP-side buildId (fixes the build ID schism)
  *   - GH_TOKEN is the GitHub PAT for gh credential helper
  *   - ANTHROPIC_API_KEY enables Claude Code to authenticate without interactive login
  *   - OPENAI_API_KEY enables Codex CLI when pipelineArgs.codeAgent === "codex"
@@ -428,9 +428,9 @@ export function buildSpawnEnv({
   const env = {
     ...baseEnv,
     PATH: augmentedPath,
-    GOAT_REMOTE: "1",
-    GOAT_CALLBACK_PORT: String(callbackPort),
-    GOAT_SAAS_BUILD_ID: buildId,
+    GOATSAAS_REMOTE: "1",
+    GOATSAAS_CALLBACK_PORT: String(callbackPort),
+    GOATSAAS_BUILD_ID: buildId,
     GH_TOKEN: githubPat,
     // Cycle 21-1-4 — never let git try to prompt interactively. Without this,
     // a credential-helper failure makes git hang trying to read username from
@@ -771,9 +771,9 @@ export function buildLogSink({ url, instanceId, token, fetchImpl = fetch }) {
 }
 
 async function reportStatus(status) {
-  const url = process.env.GOAT_MCP_SERVER_URL;
-  const id = process.env.GOAT_RUNNER_INSTANCE_ID;
-  const token = process.env.GOAT_RUNNER_TOKEN;
+  const url = process.env.GOATSAAS_MCP_SERVER_URL;
+  const id = process.env.GOATSAAS_RUNNER_INSTANCE_ID;
+  const token = process.env.GOATSAAS_RUNNER_TOKEN;
   if (!url || !id) return;
   try {
     await fetch(`${url}/runners/${encodeURIComponent(id)}/status`, {
