@@ -8,6 +8,39 @@ DIST_REPO="TheMullingsLabs/goat-saas-agent-dist"
 INSTALL_DIR="${HOME}/.local/bin"
 API_BASE="https://api.github.com/repos/${DIST_REPO}"
 DOWNLOAD_BASE="https://github.com/${DIST_REPO}/releases/download"
+LATEST_URL="${API_BASE}/releases/latest"
+# Test hook: tests point this at a local file:// fixture laid out like the release site
+# (<base>/releases/latest, <base>/releases/download/<tag>/<file>). Unset in normal use.
+if [ -n "${GOATSAAS_INSTALL_BASE_URL:-}" ]; then
+  LATEST_URL="${GOATSAAS_INSTALL_BASE_URL}/releases/latest"
+  DOWNLOAD_BASE="${GOATSAAS_INSTALL_BASE_URL}/releases/download"
+fi
+
+# Exit codes the agent's self-update reports in plain words (src/license/updater.ts,
+# INSTALL_EXIT_MESSAGES). Keep the two in step.
+EXIT_NO_RELEASE=10
+EXIT_DOWNLOAD=11
+EXIT_CHECKSUM=12
+EXIT_INSTALL=13
+
+# Network limits apply to a stalled or dead connection only, never to a download that is
+# still moving: no connection in 20 s, or under 1 KB/s for 60 s, aborts; transient errors
+# retry. There is deliberately no overall time limit (binaries are 50-65 MB).
+CURL_NET=(--connect-timeout 20 --speed-limit 1024 --speed-time 60 --retry 3 --retry-delay 2)
+if [ -t 1 ]; then
+  CURL_PROGRESS=(--progress-bar)
+else
+  CURL_PROGRESS=(-sS)
+fi
+
+# Every run works in its own temporary folder, removed on exit, so two runs never share
+# files and an interrupted run leaves nothing behind.
+WORK="$(mktemp -d)"
+trap 'rm -rf "${WORK}"' EXIT
+# A stopped run (e.g. an older agent's 60 s limit sends SIGTERM) exits through the EXIT trap too.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Detect platform
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -41,12 +74,14 @@ if [ -n "${INSTALL_GH_TOKEN}" ]; then
   AUTH_HEADER=(-H "Authorization: Bearer ${INSTALL_GH_TOKEN}")
 fi
 echo "Fetching latest release..."
-LATEST_TAG=$(curl -fsSL ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} \
-  "${API_BASE}/releases/latest" | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+LATEST_TAG=""
+if curl -fsSL "${CURL_NET[@]}" ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} "${LATEST_URL}" -o "${WORK}/latest.json"; then
+  LATEST_TAG=$(grep '"tag_name"' "${WORK}/latest.json" | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' || true)
+fi
 
 if [ -z "${LATEST_TAG}" ]; then
   echo "ERROR: Could not fetch latest release."
-  exit 1
+  exit "${EXIT_NO_RELEASE}"
 fi
 
 echo "Latest version: ${LATEST_TAG}"
@@ -54,28 +89,45 @@ echo "Latest version: ${LATEST_TAG}"
 # Download binary
 DOWNLOAD_URL="${DOWNLOAD_BASE}/${LATEST_TAG}/${BINARY_NAME}"
 echo "Downloading ${BINARY_NAME} (${LATEST_TAG})..."
-curl -fsSL -L "${DOWNLOAD_URL}" -o "/tmp/${BINARY_NAME}"
+if ! curl -fL "${CURL_NET[@]}" "${CURL_PROGRESS[@]}" "${DOWNLOAD_URL}" -o "${WORK}/${BINARY_NAME}"; then
+  echo "ERROR: Download failed. The installed version was not changed."
+  exit "${EXIT_DOWNLOAD}"
+fi
 
 # Download and verify checksum
 CHECKSUM_NAME="checksums-${TARGET}.txt"
-curl -fsSL -L \
-  "${DOWNLOAD_BASE}/${LATEST_TAG}/${CHECKSUM_NAME}" \
-  -o "/tmp/checksums.txt"
+if ! curl -fsSL "${CURL_NET[@]}" "${DOWNLOAD_BASE}/${LATEST_TAG}/${CHECKSUM_NAME}" -o "${WORK}/${CHECKSUM_NAME}"; then
+  echo "ERROR: Checksum download failed. The installed version was not changed."
+  exit "${EXIT_DOWNLOAD}"
+fi
 
 echo "Verifying checksum..."
+CHECK_OK=1
 if command -v sha256sum >/dev/null 2>&1; then
-  (cd /tmp && sha256sum -c checksums.txt --ignore-missing)
+  (cd "${WORK}" && sha256sum -c "${CHECKSUM_NAME}" --ignore-missing) || CHECK_OK=0
 elif command -v shasum >/dev/null 2>&1; then
-  (cd /tmp && shasum -a 256 -c checksums.txt)
+  (cd "${WORK}" && shasum -a 256 -c "${CHECKSUM_NAME}") || CHECK_OK=0
 else
   echo "WARNING: No checksum tool found — skipping verification"
 fi
+if [ "${CHECK_OK}" -ne 1 ]; then
+  echo "ERROR: Checksum did not match. The installed version was not changed."
+  exit "${EXIT_CHECKSUM}"
+fi
 
-# Install binary
-mkdir -p "${INSTALL_DIR}"
-mv "/tmp/${BINARY_NAME}" "${INSTALL_DIR}/goatsaas"
-chmod +x "${INSTALL_DIR}/goatsaas"
-ln -sf "${INSTALL_DIR}/goatsaas" "${INSTALL_DIR}/goat-saas-agent"
+# Install binary: copy next to the target, then rename over it, so the installed binary is
+# either the old one or the complete new one, never a partial file.
+if ! {
+  mkdir -p "${INSTALL_DIR}" &&
+    cp "${WORK}/${BINARY_NAME}" "${INSTALL_DIR}/.goatsaas.new.$$" &&
+    chmod +x "${INSTALL_DIR}/.goatsaas.new.$$" &&
+    mv -f "${INSTALL_DIR}/.goatsaas.new.$$" "${INSTALL_DIR}/goatsaas" &&
+    ln -sf "${INSTALL_DIR}/goatsaas" "${INSTALL_DIR}/goat-saas-agent"
+}; then
+  rm -f "${INSTALL_DIR}/.goatsaas.new.$$"
+  echo "ERROR: Install failed. The installed version was not changed."
+  exit "${EXIT_INSTALL}"
+fi
 
 # Write version file for --check-update
 echo "${LATEST_TAG}" > "${INSTALL_DIR}/.goat-saas-agent-version"
